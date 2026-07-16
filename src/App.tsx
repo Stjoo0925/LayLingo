@@ -112,7 +112,7 @@ export function App() {
         const nextExtracted = extracted.map((next) => {
           const previous = current.find((block) => block.id === next.id);
           return previous
-            ? { ...next, translatedText: previous.translatedText, style: previous.style, status: previous.status, mode: previous.mode, suppressed: previous.suppressed, sizingMode: previous.sizingMode, x: previous.sizingMode === "manual" ? previous.x : next.x, y: previous.sizingMode === "manual" ? previous.y : next.y, width: previous.sizingMode === "manual" ? previous.width : next.width, height: previous.sizingMode === "manual" ? previous.height : next.height }
+            ? { ...next, translatedText: previous.translatedText, displayText: previous.displayText, maskBox: previous.maskBox, style: previous.style, status: previous.status, mode: previous.mode, suppressed: previous.suppressed, sizingMode: previous.sizingMode, x: previous.sizingMode === "manual" ? previous.x : next.x, y: previous.sizingMode === "manual" ? previous.y : next.y, width: previous.sizingMode === "manual" ? previous.width : next.width, height: previous.sizingMode === "manual" ? previous.height : next.height }
             : next;
         });
         return [...otherPages, ...nextExtracted, ...manualRegions];
@@ -285,7 +285,11 @@ export function App() {
 
     if (mode === "paragraph") {
       const ordered = [...baseTargets].sort((a, b) => a.y - b.y || a.x - b.x);
-      const bounds = getBlockBounds(ordered);
+      const sourceLeft = Math.min(...ordered.map((block) => block.sourceBox.x));
+      const sourceTop = Math.min(...ordered.map((block) => block.sourceBox.y));
+      const sourceRight = Math.max(...ordered.map((block) => block.sourceBox.x + block.sourceBox.width));
+      const sourceBottom = Math.max(...ordered.map((block) => block.sourceBox.y + block.sourceBox.height));
+      const bounds = { x: sourceLeft, y: sourceTop, width: sourceRight - sourceLeft, height: sourceBottom - sourceTop };
       const primary = ordered[0];
       const commonFontSize = Math.min(...ordered.map((block) => block.style.fontSize));
       const combinedText = ordered.map((block) => block.translatedText.trim()).filter(Boolean).join(" ");
@@ -293,8 +297,8 @@ export function App() {
       setBlocks(baseBlocks.map((block) => {
         const index = ordered.findIndex((target) => target.id === block.id);
         if (index < 0) return block;
-        if (index > 0) return { ...block, suppressed: true, sizingMode: "manual" as const, style: { ...block.style, fontSize: commonFontSize } };
-        return { ...block, translatedText: combinedText, suppressed: false, x: bounds.x, y: bounds.y, width: bounds.width, height: layout.height, sizingMode: "manual" as const, style: { ...block.style, fontSize: commonFontSize } };
+        if (index > 0) return { ...block, suppressed: true, displayText: undefined, maskBox: undefined, sizingMode: "manual" as const, style: { ...block.style, fontSize: commonFontSize } };
+        return { ...block, displayText: combinedText, maskBox: bounds, suppressed: false, x: bounds.x, y: bounds.y, width: bounds.width, height: layout.height, sizingMode: "manual" as const, style: { ...block.style, fontSize: commonFontSize } };
       }));
       setLayoutPreviewMode(mode);
       setMessage("문단 재배치 미리보기입니다. 적용하거나 다른 방식을 선택하세요.");
@@ -340,6 +344,8 @@ export function App() {
         ...block,
         ...layout,
         suppressed: false,
+        displayText: undefined,
+        maskBox: undefined,
         sizingMode: "manual" as const,
         style: { ...block.style, fontSize: commonFontSize },
       };
@@ -607,10 +613,10 @@ export function App() {
               <canvas ref={backgroundCanvasRef} className="pdf-background-canvas" />
               <canvas ref={canvasRef} className="pdf-foreground-canvas" />
               <div className="text-layer" style={{ width: canvasRef.current?.style.width, height: canvasRef.current?.style.height }} onPointerDown={startDragSelection} onPointerMove={moveDragSelection} onPointerUp={finishDragSelection} onPointerCancel={cancelDragSelection}>
-                {pageBlocks.filter((block) => block.translatedText).map((block) => <SourceMask key={`mask-${block.id}`} block={block} sourceCanvas={backgroundCanvasRef.current} originalCanvas={foregroundBaseRef.current} />)}
-                {pageBlocks.map((block) => (
+                {pageBlocks.filter((block) => block.translatedText && !block.suppressed).map((block) => <SourceMask key={`mask-${block.id}`} block={block} sourceCanvas={backgroundCanvasRef.current} originalCanvas={foregroundBaseRef.current} />)}
+                {pageBlocks.filter((block) => !block.suppressed).map((block) => (
                   <div key={block.id} role="button" tabIndex={0} className={`text-hitbox ${selectedId === block.id ? "selected" : ""} ${draggedBlockIds.includes(block.id) ? "group-selected" : ""} ${block.status} ${hasOverlap(block) && !draggedBlockIds.includes(block.id) ? "overlap" : ""}`} style={{ left: block.x, top: block.y, width: block.width, height: Math.max(block.height, 16) }} title={`${block.originalText} 번역`} aria-label={`${block.originalText} 번역`} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") void translateBlock(block); }} onClick={(event) => { if (Date.now() < suppressClickUntilRef.current) { event.preventDefault(); return; } void translateBlock(block); }}>
-                    {block.translatedText && !block.suppressed && <span className="translated-overlay" style={{ fontFamily: block.style.fontFamily, fontSize: block.style.fontSize, color: block.style.color, fontWeight: block.style.fontWeight, fontStyle: block.style.fontStyle, textAlign: block.style.textAlign, opacity: block.style.opacity, transform: `rotate(${block.style.rotation}deg)` }}>{block.translatedText}</span>}
+                    {block.translatedText && <span className="translated-overlay" style={{ fontFamily: block.style.fontFamily, fontSize: block.style.fontSize, color: block.style.color, fontWeight: block.style.fontWeight, fontStyle: block.style.fontStyle, textAlign: block.style.textAlign, opacity: block.style.opacity, transform: `rotate(${block.style.rotation}deg)` }}>{block.displayText ?? block.translatedText}</span>}
                     {selectedId === block.id && <><span className="resize-handle left" aria-label="왼쪽 너비 조절" onPointerDown={(event) => startResize(block, "left", event)} /><span className="resize-handle right" aria-label="오른쪽 너비 조절" onPointerDown={(event) => startResize(block, "right", event)} /></>}
                   </div>
                 ))}
@@ -659,14 +665,15 @@ function UndoIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d
 
 function SourceMask({ block, sourceCanvas, originalCanvas }: { block: PdfTextBlock; sourceCanvas: HTMLCanvasElement | null; originalCanvas: HTMLCanvasElement | null }) {
   const maskRef = useRef<HTMLCanvasElement>(null);
+  const maskBox = block.maskBox ?? block.sourceBox;
 
   useEffect(() => {
     const mask = maskRef.current;
     if (!mask || !sourceCanvas || !originalCanvas) return;
     const padding = Math.max(4, Math.ceil(block.style.fontSize * 0.35));
     const pixelScale = sourceCanvas.width / Math.max(sourceCanvas.clientWidth, 1);
-    const width = block.sourceBox.width + padding * 2;
-    const height = block.sourceBox.height + padding * 2;
+    const width = maskBox.width + padding * 2;
+    const height = maskBox.height + padding * 2;
     mask.width = Math.ceil(width * pixelScale);
     mask.height = Math.ceil(height * pixelScale);
     mask.style.width = `${width}px`;
@@ -676,8 +683,8 @@ function SourceMask({ block, sourceCanvas, originalCanvas }: { block: PdfTextBlo
     const originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
     if (!context || !sourceContext || !originalContext) return;
 
-    const sourceX = Math.max(0, Math.floor((block.sourceBox.x - padding) * pixelScale));
-    const sourceY = Math.max(0, Math.floor((block.sourceBox.y - padding) * pixelScale));
+    const sourceX = Math.max(0, Math.floor((maskBox.x - padding) * pixelScale));
+    const sourceY = Math.max(0, Math.floor((maskBox.y - padding) * pixelScale));
     const sampleWidth = Math.min(mask.width, sourceCanvas.width - sourceX);
     const sampleHeight = Math.min(mask.height, sourceCanvas.height - sourceY);
 
@@ -699,10 +706,10 @@ function SourceMask({ block, sourceCanvas, originalCanvas }: { block: PdfTextBlo
       context.fillStyle = sampleBoundaryColor(sourceContext, sourceX, sourceY, sampleWidth, sampleHeight);
       context.fillRect(0, 0, mask.width, mask.height);
     }
-  }, [block.sourceBox, block.style.fontSize, originalCanvas, sourceCanvas]);
+  }, [block.style.fontSize, maskBox.height, maskBox.width, maskBox.x, maskBox.y, originalCanvas, sourceCanvas]);
 
   const padding = Math.max(4, Math.ceil(block.style.fontSize * 0.35));
-  return <canvas ref={maskRef} className="source-mask" style={{ left: block.sourceBox.x - padding, top: block.sourceBox.y - padding }} aria-hidden="true" />;
+  return <canvas ref={maskRef} className="source-mask" style={{ left: maskBox.x - padding, top: maskBox.y - padding }} aria-hidden="true" />;
 }
 
 function restoreBackground(source: ImageData) {

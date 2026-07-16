@@ -32,4 +32,11 @@ export interface PdfTextBlock {
   status: "idle" | "translating" | "translated" | "error";
   mode?: "demo" | "openai";
   suppressed?: boolean;
+  displayText?: string;
+  maskBox?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 }
